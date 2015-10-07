@@ -18,6 +18,7 @@ from six import string_types
 from ping.analysis.similarity import is_bad_key
 from ping.apps import PINGSession
 from research.data import get_all_data, keytype2label
+from research.plotting import show_plots
 
 
 def parse_scatter_key(key):
@@ -63,9 +64,10 @@ def compute_key_data(data, key):
         return {k: getattr(f_data[k], op)() for k in keys}
 
 
-def plot_scatter_4D(data, x_key, y_key, size_key=None, color_key=None, 
+def plot_scatter_4D(data, x_key, y_key, size_key=None, color_key=None,
                     x_label=None, y_label=None, size_label=None, color_fn=None,
-                    add_marker_text=False, ax=None):
+                    add_marker_text=False, ax=None, title=None,
+                    plotengine='matplotlib'):
     """y_key can be a list..."""
     colors = np.asarray(['b','r','g','y'])
 
@@ -82,8 +84,6 @@ def plot_scatter_4D(data, x_key, y_key, size_key=None, color_key=None,
         y_label = compute_scatter_label(y_key)
     if size_label is None:
         size_label = compute_scatter_label(size_key)
-    if ax is None:
-        ax = plt.figure(figsize=(11, 10.5)).gca()
 
     # Now get all the data, and manipulate as needed
     kwargs = {
@@ -136,47 +136,84 @@ def plot_scatter_4D(data, x_key, y_key, size_key=None, color_key=None,
         kwargs['c'] = colors[kwargs['c']].ravel()
 
     # Now plot it, and annotate it!
-    ax.scatter(**kwargs)
-    ax.tick_params(labelsize=16)
-    if x_label:
-        ax.set_xlabel(x_label, fontsize=18)
-    if y_label:
-        ax.set_ylabel(y_label, fontsize=18)
-    if size_label:
-        if 'thickness' in size_label:  # hack
-            loc = 'upper left'
-        else:
-            loc = 'upper right'
-        ax.legend([size_label], loc=loc)
+    if plotengine in ['matplotlib', 'mpld3']:
+        if ax is None:
+            ax = plt.figure(figsize=(11, 10.5)).gca()
+        ax.scatter(**kwargs)
+        ax.tick_params(labelsize=16)
+        if x_label:
+            ax.set_xlabel(x_label, fontsize=18)
+        if y_label:
+            ax.set_ylabel(y_label, fontsize=18)
+        if size_label:
+            if 'thickness' in size_label:  # hack
+                loc = 'upper left'
+            else:
+                loc = 'upper right'
+            ax.legend([size_label], loc=loc)
 
-    if add_marker_text:
-        # Interesting if it's outside of some range of values
-        is_interesting = lambda v, varr, dist: np.abs(varr.mean() - v) >= dist * varr.std()
+        if add_marker_text:
+            # Interesting if it's outside of some range of values
+            is_interesting = lambda v, varr, dist: np.abs(varr.mean() - v) >= dist * varr.std()
 
-        for label, x, y, s in zip(common_keys, kwargs['x'], kwargs['y'], kwargs['s']):
-            locs = locals()
-            annotations = [key for key, sval in zip(['x', 'y', 's'], [1.35, 1.5, 2])
-                           if is_interesting(locs[key], kwargs[key], sval)]
-            if len(annotations) > 0:
-                plt.annotate(
-                    '%s (%s)' % (data.get_anatomical_name(data.get_nonhemi_key(label)), ', '.join(annotations)),
-                    xy=(x, y), xytext=(25, 25),
-                    textcoords='offset points', ha='right', va='bottom',
-                    bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.5),
-                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3, rad=0'),
-                    fontsize=16)
+            for label, x, y, s in zip(common_keys, kwargs['x'], kwargs['y'], kwargs['s']):
+                locs = locals()
+                annotations = [key for key, sval in zip(['x', 'y', 's'], [1.35, 1.5, 2])
+                               if is_interesting(locs[key], kwargs[key], sval)]
+                if len(annotations) > 0:
+                    plt.annotate(
+                        '%s (%s)' % (data.get_anatomical_name(data.get_nonhemi_key(label)), ', '.join(annotations)),
+                        xy=(x, y), xytext=(25, 25),
+                        textcoords='offset points', ha='right', va='bottom',
+                        bbox=dict(boxstyle='round,pad=0.5', fc='yellow', alpha=0.5),
+                        arrowprops=dict(arrowstyle='->', connectionstyle='arc3, rad=0'),
+                        fontsize=16)
 
-    plt.axis('equal') #ax.set_aspect('equal')
-    if np.any(kwargs['x'] <= 0) and np.any(kwargs['x'] >= 0):
-        ax.plot([0, 0], ax.get_ylim(), 'k--')  # y-axis
-    if np.any(kwargs['y'] <= 0) and np.any(kwargs['y'] >= 0):
-       ax.plot(ax.get_xlim(), [0, 0], 'k--')  # x-axis
-    plt.axis('tight')
+        plt.axis('equal') #ax.set_aspect('equal')
+        if np.any(kwargs['x'] <= 0) and np.any(kwargs['x'] >= 0):
+            ax.plot([0, 0], ax.get_ylim(), 'k--')  # y-axis
+        if np.any(kwargs['y'] <= 0) and np.any(kwargs['y'] >= 0):
+           ax.plot(ax.get_xlim(), [0, 0], 'k--')  # x-axis
+        plt.axis('tight')
+
+        ax.get_figure().suptitle(title, fontsize=24)
+    elif plotengine in ['bokeh']:
+        from bokeh.io import show
+        from bokeh.models.glyphs import Circle
+        from bokeh.models import (Plot, DataRange1d, LinearAxis, Legend,
+                                  ColumnDataSource, PanTool, WheelZoomTool,
+                                  HoverTool, CrosshairTool, PreviewSaveTool,
+                                  ResizeTool, BoxZoomTool)
+        source = ColumnDataSource(data=dict(
+            label=[data.get_anatomical_name(data.get_nonhemi_key(label))
+                   for label in common_keys],
+            x=kwargs['x'],
+            y=kwargs['y'],
+            s=kwargs.get('s', 1000) / 1.E5))
+        xdr = DataRange1d()
+        ydr = DataRange1d()
+        plot = Plot(x_range=xdr, y_range=ydr, title=title)
+        circle = Circle(x="x", y="y", radius="s",
+                        fill_color=kwargs.get('c', 'blue'),
+                        line_color="black")
+        circle_renderer = plot.add_glyph(source, circle)
+
+        legend = Legend(orientation="top_right")
+        legend.legends = [(size_label, [circle_renderer])]
+
+        plot.add_layout(legend)
+        plot.add_layout(LinearAxis(axis_label=x_label), 'below')
+        plot.add_layout(LinearAxis(axis_label=y_label), 'left')
+        plot.add_tools(PanTool(), WheelZoomTool(), CrosshairTool(),
+                       PreviewSaveTool(), ResizeTool(), BoxZoomTool(),
+                       HoverTool(tooltips=[('label', '@label')]))
+        ax = plot
     return ax
 
 
 def do_scatter(prefix, x_key, y_key, size_key=None, color_key=None,
-               dataset='ping', username=None, passwd=None):
+               dataset='ping', username=None, passwd=None,
+               plotengine='matplotlib'):
 
     prefix = prefix.split(',')
     y_key = y_key.split(',')
@@ -194,14 +231,16 @@ def do_scatter(prefix, x_key, y_key, size_key=None, color_key=None,
              ', '.join([data.prefix2text(p).lower() for p in prefix]))
     else:
         size_label = None
-    ax = plot_scatter_4D(data, x_key=x_key, y_key=y_key, size_key=size_key, color_key=color_key,
-                         size_label=size_label, add_marker_text=True)
+
+    ax = plot_scatter_4D(data, x_key=x_key, y_key=y_key, size_key=size_key,
+                         color_key=color_key, size_label=size_label,
+                         add_marker_text=True,
+                         title=', '.join([data.prefix2text(p)
+                                          for p in prefix]),
+                         plotengine=plotengine)
     # x_label='Asymmetry Index (mean)', y_label='Asymmetry Index (std)',
 
-    ax.get_figure().suptitle(', '.join([data.prefix2text(p)
-                                        for p in prefix]),
-                             fontsize=24)
-    plt.show()
+    show_plots(plotengine, ax=ax)
 
 
 if __name__ == '__main__':
@@ -220,6 +259,8 @@ if __name__ == '__main__':
                         nargs='?', default=None)
     parser.add_argument('--dataset', choices=['ping', 'destrieux'],
                         nargs='?', default='ping')
+    parser.add_argument('--plotengine', choices=['matplotlib', 'mpld3', 'bokeh'],
+                        nargs='?', default='matplotlib')
     parser.add_argument('--username', nargs='?',
                         default=PINGSession.env_username())
     parser.add_argument('--password', nargs='?',
